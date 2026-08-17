@@ -174,7 +174,6 @@ enum HomeWidgetType {
   HOME_WIDGET_TIMER,
   HOME_WIDGET_RAIN,
   HOME_WIDGET_OUTDOOR,
-  HOME_WIDGET_KP,
   HOME_WIDGET_UV,
   HOME_WIDGET_WIND,
   HOME_WIDGET_SUN,
@@ -234,8 +233,8 @@ String lastTempText = "";
 String lastRainText = "";
 String lastUvText = "";
 String lastUvLevelText = "";
-String lastKpText = "";
-String lastKpLevelText = "";
+String lastMoonText = "";
+String lastMoonLevelText = "";
 String lastWindText = "";
 String lastWindDirText = "";
 String lastNextSunLabel = "";
@@ -248,7 +247,6 @@ const char* homeWidgetKey(HomeWidgetType type) {
     case HOME_WIDGET_TIMER:   return "timer";
     case HOME_WIDGET_RAIN:    return "rain";
     case HOME_WIDGET_OUTDOOR: return "outdoor";
-    case HOME_WIDGET_KP:      return "kp";
     case HOME_WIDGET_UV:      return "uv";
     case HOME_WIDGET_WIND:    return "wind";
     case HOME_WIDGET_SUN:     return "sun";
@@ -263,7 +261,6 @@ const char* homeWidgetLabel(HomeWidgetType type) {
     case HOME_WIDGET_TIMER:   return "Timer";
     case HOME_WIDGET_RAIN:    return "Rain";
     case HOME_WIDGET_OUTDOOR: return "Outdoor";
-    case HOME_WIDGET_KP:      return "KP index";
     case HOME_WIDGET_UV:      return "UV index";
     case HOME_WIDGET_WIND:    return "Wind";
     case HOME_WIDGET_SUN:     return "Sun event";
@@ -277,7 +274,6 @@ HomeWidgetType homeWidgetFromKey(const String& key) {
   if (key == "timer") return HOME_WIDGET_TIMER;
   if (key == "rain") return HOME_WIDGET_RAIN;
   if (key == "outdoor") return HOME_WIDGET_OUTDOOR;
-  if (key == "kp") return HOME_WIDGET_KP;
   if (key == "uv") return HOME_WIDGET_UV;
   if (key == "wind") return HOME_WIDGET_WIND;
   if (key == "sun") return HOME_WIDGET_SUN;
@@ -428,7 +424,6 @@ void appendHomeWidgetOptions(String& page, const String& selectedKey) {
     HOME_WIDGET_TIMER,
     HOME_WIDGET_RAIN,
     HOME_WIDGET_OUTDOOR,
-    HOME_WIDGET_KP,
     HOME_WIDGET_UV,
     HOME_WIDGET_WIND,
     HOME_WIDGET_SUN,
@@ -481,11 +476,6 @@ static float uvIndex = NAN;
 static float moonPhase = NAN;
 static time_t lastWeatherFetch = 0;
 static const uint32_t WEATHER_INTERVAL_SEC = 10 * 60;
-
-// KP-index
-static float kpIndex = NAN;
-static time_t lastKpFetch = 0;
-static const uint32_t KP_INTERVAL_SEC = 10 * 60;
 
 // Sunrise / Sunset
 static int sunriseMin = -1;
@@ -619,18 +609,6 @@ static String windDirectionText() {
   const char* dirs[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
   int idx = (int)roundf(windDirectionDeg / 45.0f) % 8;
   return String(dirs[idx]) + " " + String((int)roundf(windDirectionDeg)) + "deg";
-}
-
-static String kpText() {
-  return isnan(kpIndex) ? "Kp --" : "Kp " + String(kpIndex, 1);
-}
-
-static String kpLevelText() {
-  if (isnan(kpIndex)) return "--";
-  if (kpIndex < 3.0f) return "Low";
-  if (kpIndex < 5.0f) return "Medium";
-  if (kpIndex < 7.0f) return "High";
-  return "Extreme";
 }
 
 static String uvText() {
@@ -1088,12 +1066,10 @@ void resetDataCaches() {
   precipMm = NAN;
   windSpeedMs = NAN;
   windDirectionDeg = NAN;
-  kpIndex = NAN;
   sunriseMin = -1;
   sunsetMin = -1;
   lastSunYmd = -1;
   lastWeatherFetch = 0;
-  lastKpFetch = 0;
   dataDirty = true;
   pageDirty = true;
 }
@@ -1281,41 +1257,6 @@ void ensureWeather() {
   }
 }
 
-bool fetchKpIndex() {
-  if (WiFi.status() != WL_CONNECTED) return false;
-
-  String body;
-  if (!httpsGetBody("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json", body)) {
-    return false;
-  }
-
-  int lastRow = body.lastIndexOf('[');
-  if (lastRow < 0) return false;
-
-  int firstComma = body.indexOf(',', lastRow);
-  if (firstComma < 0) return false;
-
-  int q1 = body.indexOf('"', firstComma);
-  if (q1 < 0) return false;
-  int q2 = body.indexOf('"', q1 + 1);
-  if (q2 < 0) return false;
-
-  String kpStrLocal = body.substring(q1 + 1, q2);
-  kpIndex = kpStrLocal.toFloat();
-
-  lastKpFetch = time(nullptr);
-  lastSyncTime = lastKpFetch;
-  return true;
-}
-
-void ensureKpIndex() {
-  time_t nowT = time(nullptr);
-  if ((isnan(kpIndex) || (nowT - lastKpFetch) > KP_INTERVAL_SEC) &&
-      WiFi.status() == WL_CONNECTED) {
-    if (fetchKpIndex()) dataDirty = true;
-  }
-}
-
 // =========================================================
 // RADAR DATA
 // =========================================================
@@ -1498,7 +1439,8 @@ void drawMoonIcon(TFT_eSprite& spr, int cx, int cy, uint16_t c) {
 // Renders the moon disc as a lit/dark terminator scaled to the illuminated
 // fraction (0 = new moon, 1 = full moon). Convention: illumination grows
 // from the right edge, matching a waxing moon's on-screen silhouette.
-void drawMoonPhaseGraphic(TFT_eSprite& spr, int cx, int cy, int r, float illum, uint16_t litColor, uint16_t darkColor) {
+template <typename Display>
+void drawMoonPhaseGraphic(Display& spr, int cx, int cy, int r, float illum, uint16_t litColor, uint16_t darkColor) {
   if (isnan(illum)) illum = 0.5f;
   illum = constrain(illum, 0.0f, 1.0f);
 
@@ -1743,9 +1685,6 @@ void drawHomeSlotWidget(int slot, bool force = false) {
     case HOME_WIDGET_OUTDOOR:
       drawWeatherStyleMetricSprite(x, y, w, h, "Outdoor", tempText(), cacheHomeSlots[slot], force, tempRangeText());
       break;
-    case HOME_WIDGET_KP:
-      drawWeatherStyleMetricSprite(x, y, w, h, "KP index", kpText(), cacheHomeSlots[slot], force, kpLevelText());
-      break;
     case HOME_WIDGET_UV:
       drawWeatherStyleMetricSprite(x, y, w, h, "UV index", uvText(), cacheHomeSlots[slot], force, uvLevelText());
       break;
@@ -1914,8 +1853,8 @@ void drawWeatherPageFull() {
   lastRainText = "";
   lastUvText = "";
   lastUvLevelText = "";
-  lastKpText = "";
-  lastKpLevelText = "";
+  lastMoonText = "";
+  lastMoonLevelText = "";
   lastWindText = "";
   lastWindDirText = "";
   lastNextSunLabel = "";
@@ -1998,18 +1937,25 @@ void updateWeatherDynamic() {
     lastNextSunTime = nt;
   }
 
-  String k = kpText();
-  String kl = kpLevelText();
-  if (k != lastKpText || kl != lastKpLevelText || dataDirty) {
-    tft.fillRect(134, PAGE_ROW3_Y + 30, 88, 30, COL_PANEL);
+  String mv = moonPhaseText();
+  String ml = moonPhaseLabelText();
+  if (mv != lastMoonText || ml != lastMoonLevelText || dataDirty) {
+    tft.fillRect(126, PAGE_ROW3_Y + 6, 104, PAGE_WIDGET_H - 12, COL_PANEL);
     tft.setTextColor(COL_DIM, COL_PANEL);
-    tft.drawString("KP index", 134, PAGE_ROW3_Y + 8, 2);
+    tft.drawString("Moon", 134, PAGE_ROW3_Y + 8, 2);
     tft.setTextColor(COL_TEXT, COL_PANEL);
-    tft.drawString(k, 134, PAGE_ROW3_Y + 28, 4);
+    tft.drawString(mv, 134, PAGE_ROW3_Y + 28, 4);
     tft.setTextColor(COL_ACCENT, COL_PANEL);
-    tft.drawString(kl, 134, PAGE_ROW3_Y + 52, 1);
-    lastKpText = k;
-    lastKpLevelText = kl;
+    tft.drawString(ml, 134, PAGE_ROW3_Y + 52, 1);
+
+    const int iconCx = 210;
+    const int iconCy = PAGE_ROW3_Y + PAGE_WIDGET_H / 2;
+    const int iconR = 16;
+    drawMoonPhaseGraphic(tft, iconCx, iconCy, iconR, moonPhase, COL_TEXT, COL_PANEL);
+    tft.drawCircle(iconCx, iconCy, iconR, COL_STROKE);
+
+    lastMoonText = mv;
+    lastMoonLevelText = ml;
   }
 }
 
@@ -2700,8 +2646,8 @@ void handleSave() {
 
   lastTempText = "";
   lastRainText = "";
-  lastKpText = "";
-  lastKpLevelText = "";
+  lastMoonText = "";
+  lastMoonLevelText = "";
   lastWindText = "";
   lastWindDirText = "";
   lastNextSunLabel = "";
@@ -2766,7 +2712,6 @@ void updateWiFiConnectionState() {
     wifiConnectInProgress = false;
     ensureSunTimesForToday();
     ensureWeather();
-    ensureKpIndex();
     dataDirty = true;
     pageDirty = true;
     return;
@@ -2835,7 +2780,6 @@ void setup() {
 
   ensureSunTimesForToday();
   ensureWeather();
-  ensureKpIndex();
 
   setupWebServer();
 
@@ -2903,7 +2847,6 @@ void loop() {
     lastDataTick = millis();
     ensureSunTimesForToday();
     ensureWeather();
-    ensureKpIndex();
   }
 
   if (pageDirty || lastDrawnPage != currentPage) {
