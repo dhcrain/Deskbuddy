@@ -1,0 +1,4 @@
+.claude/
+DeskBuddy/
+.DS_Store
+arduino_secrets.h

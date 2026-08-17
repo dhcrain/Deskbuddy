@@ -21,10 +21,19 @@
 #include <math.h>
 
 // =========================================================
+// FORWARD DECLARATIONS
+// =========================================================
+void setBacklight(int value);
+void setWifiEnabled(bool enabled);
+
+// =========================================================
 // WIFI
 // =========================================================
-const char* WIFI_SSID = "YOUR_WIFI_SSID";       // Replace with your WiFi network name
-const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";   // Replace with your WiFi password
+// arduino_secrets.h is gitignored and lives only in the sketch folder,
+// so it survives repo copies. Create it with:
+//   const char* WIFI_SSID = "your network name";
+//   const char* WIFI_PASS = "your password";
+#include "arduino_secrets.h"
 
 // =========================================================
 // DISPLAY / TOUCH
@@ -68,9 +77,7 @@ TFT_eSprite sprSmall = TFT_eSprite(&tft);
 // =========================================================
 // LOCATION
 // =========================================================
-float LAT = 52.5200f;
-float LNG = 13.4050f;
-String locationName = "Berlin";
+// Default lat/lng/name come from arduino_secrets.h (gitignored, sketch-folder only)
 
 // =========================================================
 // THEME
@@ -88,10 +95,12 @@ const uint16_t COL_YELLOW = 0xFFE0;
 const uint16_t COL_RED    = TFT_RED;
 const uint16_t COL_BLUE   = 0x041F;
 
+String accentKey = "cyan";
+String bgKey = "slate";
 String textColorKey = "standard";
-String unitKey = "metric"; // metric = C/mm, imperial = F/in
-String regionFormatKey = "europe"; // europe = 24h + dd.mm.yyyy, us = 12h + mm/dd/yyyy
-String timezoneKey = "europe_central";
+String unitKey = "imperial"; // metric = C/mm, imperial = F/in
+String regionFormatKey = "us"; // europe = 24h + dd.mm.yyyy, us = 12h + mm/dd/yyyy
+String timezoneKey = "us_eastern";
 
 // =========================================================
 // LAYOUT
@@ -713,6 +722,29 @@ static String themePreviewCss(const String& key) {
   return cssColorFrom565(0x08A3);
 }
 
+static const char* const ACCENT_KEYS[] = {
+  "standard", "ice", "white", "cyan", "mint", "green",
+  "blue", "purple", "pink", "orange", "amber", "red"
+};
+static const int ACCENT_KEY_COUNT = sizeof(ACCENT_KEYS) / sizeof(ACCENT_KEYS[0]);
+
+static const char* const BG_KEYS[] = {
+  "slate", "deep", "nordic", "forest", "coffee", "soft",
+  "midnight", "graphite", "garnet", "ochre"
+};
+static const int BG_KEY_COUNT = sizeof(BG_KEYS) / sizeof(BG_KEYS[0]);
+
+static void appendColorSwatches(String& page, const char* fieldName, const String& currentValue,
+                                 const char* const* keys, int keyCount, String (*previewFn)(const String&)) {
+  for (int i = 0; i < keyCount; i++) {
+    String key = keys[i];
+    bool isActive = (currentValue == key);
+    page += "<label class='swatch" + String(isActive ? " active" : "") + "' style='background:" + previewFn(key) +
+            ";'><input type='radio' name='" + String(fieldName) + "' value='" + key + "'" +
+            String(isActive ? " checked" : "") + "></label>";
+  }
+}
+
 static String formatTimerClock(unsigned long totalSec) {
   unsigned long minutes = totalSec / 60UL;
   unsigned long seconds = totalSec % 60UL;
@@ -913,40 +945,40 @@ void handleAutoSleep() {
 // =========================================================
 // THEME / SETTINGS
 // =========================================================
-void applyThemeByKey(const String& accentKey, const String& bgKey) {
-  if (accentKey == "standard")    COL_ACCENT = 0xEF7D;
-  else if (accentKey == "cyan")   COL_ACCENT = 0x5EFA;
-  else if (accentKey == "ice")    COL_ACCENT = 0xEFFF;
-  else if (accentKey == "white")  COL_ACCENT = TFT_WHITE;
-  else if (accentKey == "mint")   COL_ACCENT = 0x07F0;
-  else if (accentKey == "green")  COL_ACCENT = TFT_GREEN;
-  else if (accentKey == "blue")   COL_ACCENT = 0x3D9F;
-  else if (accentKey == "purple") COL_ACCENT = 0xA2F5;
-  else if (accentKey == "pink")   COL_ACCENT = 0xF97F;
-  else if (accentKey == "orange") COL_ACCENT = 0xFD20;
-  else if (accentKey == "amber")  COL_ACCENT = 0xFEA0;
-  else if (accentKey == "red")    COL_ACCENT = TFT_RED;
-  else                            COL_ACCENT = 0x5EFA;
+void applyThemeByKey(const String& newAccentKey, const String& newBgKey) {
+  if (newAccentKey == "standard")    COL_ACCENT = 0xEF7D;
+  else if (newAccentKey == "cyan")   COL_ACCENT = 0x5EFA;
+  else if (newAccentKey == "ice")    COL_ACCENT = 0xEFFF;
+  else if (newAccentKey == "white")  COL_ACCENT = TFT_WHITE;
+  else if (newAccentKey == "mint")   COL_ACCENT = 0x07F0;
+  else if (newAccentKey == "green")  COL_ACCENT = TFT_GREEN;
+  else if (newAccentKey == "blue")   COL_ACCENT = 0x3D9F;
+  else if (newAccentKey == "purple") COL_ACCENT = 0xA2F5;
+  else if (newAccentKey == "pink")   COL_ACCENT = 0xF97F;
+  else if (newAccentKey == "orange") COL_ACCENT = 0xFD20;
+  else if (newAccentKey == "amber")  COL_ACCENT = 0xFEA0;
+  else if (newAccentKey == "red")    COL_ACCENT = TFT_RED;
+  else                                COL_ACCENT = 0x5EFA;
 
-  if (bgKey == "slate") {
+  if (newBgKey == "slate") {
     COL_BG = 0x08A3; COL_PANEL = 0x1106; COL_PANEL_ALT = 0x18C7; COL_STROKE = 0x31EC;
-  } else if (bgKey == "deep") {
+  } else if (newBgKey == "deep") {
     COL_BG = 0x0000; COL_PANEL = 0x0841; COL_PANEL_ALT = 0x1082; COL_STROKE = 0x2945;
-  } else if (bgKey == "nordic") {
+  } else if (newBgKey == "nordic") {
     COL_BG = 0x0864; COL_PANEL = 0x10C6; COL_PANEL_ALT = 0x1908; COL_STROKE = 0x3A2D;
-  } else if (bgKey == "forest") {
+  } else if (newBgKey == "forest") {
     COL_BG = 0x0208; COL_PANEL = 0x0ACB; COL_PANEL_ALT = 0x134D; COL_STROKE = 0x2D72;
-  } else if (bgKey == "coffee") {
+  } else if (newBgKey == "coffee") {
     COL_BG = 0x18A3; COL_PANEL = 0x2945; COL_PANEL_ALT = 0x39C7; COL_STROKE = 0x5A89;
-  } else if (bgKey == "soft") {
+  } else if (newBgKey == "soft") {
     COL_BG = 0x10A2; COL_PANEL = 0x1924; COL_PANEL_ALT = 0x2145; COL_STROKE = 0x3A49;
-  } else if (bgKey == "midnight") {
+  } else if (newBgKey == "midnight") {
     COL_BG = 0x0008; COL_PANEL = 0x0011; COL_PANEL_ALT = 0x0018; COL_STROKE = 0x3A7F;
-  } else if (bgKey == "graphite") {
+  } else if (newBgKey == "graphite") {
     COL_BG = 0x1082; COL_PANEL = 0x18C3; COL_PANEL_ALT = 0x2104; COL_STROKE = 0x4208;
-  } else if (bgKey == "garnet") {
+  } else if (newBgKey == "garnet") {
     COL_BG = 0x1004; COL_PANEL = 0x1886; COL_PANEL_ALT = 0x20E8; COL_STROKE = 0x41AC;
-  } else if (bgKey == "ochre") {
+  } else if (newBgKey == "ochre") {
     COL_BG = 0x20E1; COL_PANEL = 0x3184; COL_PANEL_ALT = 0x4226; COL_STROKE = 0x632B;
   } else {
     COL_BG = 0x08A3; COL_PANEL = 0x1106; COL_PANEL_ALT = 0x18C7; COL_STROKE = 0x31EC;
@@ -990,19 +1022,19 @@ void applyTextColorByKey(const String& key) {
 void loadStoredSettings() {
   prefs.begin("deskbuddy", false);
 
-  String accent = prefs.getString("accent", "cyan");
-  String bg     = prefs.getString("bg", "slate");
+  accentKey = prefs.getString("accent", accentKey);
+  bgKey     = prefs.getString("bg", bgKey);
   String txt    = prefs.getString("text", "standard");
 
   notesText        = prefs.getString("notes", "No notes yet.");
   buddyNickname    = prefs.getString("nickname", "");
-  locationName     = prefs.getString("locname", "Berlin");
-  LAT              = prefs.getFloat("lat", 52.5200f);
-  LNG              = prefs.getFloat("lng", 13.4050f);
+  locationName     = prefs.getString("locname", locationName);
+  LAT              = prefs.getFloat("lat", LAT);
+  LNG              = prefs.getFloat("lng", LNG);
   sleepIntervalMin = prefs.getInt("sleepMin", 10);
-  unitKey          = prefs.getString("units", "metric");
-  regionFormatKey  = prefs.getString("region", "europe");
-  timezoneKey      = sanitizeTimezoneKey(prefs.getString("tz", "europe_central"));
+  unitKey          = prefs.getString("units", unitKey);
+  regionFormatKey  = prefs.getString("region", regionFormatKey);
+  timezoneKey      = sanitizeTimezoneKey(prefs.getString("tz", timezoneKey));
   flashModeEnabled = prefs.getBool("flashMode", false);
   wifiEnabled      = prefs.getBool("wifiEnabled", true);
 
@@ -1016,10 +1048,10 @@ void loadStoredSettings() {
     timerPresetMin[i] = sanitizeTimerMinutes(prefs.getInt(key.c_str(), timerPresetMin[i]));
   }
 
-  if (unitKey != "metric" && unitKey != "imperial") unitKey = "metric";
-  if (regionFormatKey != "europe" && regionFormatKey != "us") regionFormatKey = "europe";
+  if (unitKey != "metric" && unitKey != "imperial") unitKey = "imperial";
+  if (regionFormatKey != "europe" && regionFormatKey != "us") regionFormatKey = "us";
   buddyNickname.trim();
-  applyThemeByKey(accent, bg);
+  applyThemeByKey(accentKey, bgKey);
   applyTextColorByKey(txt);
   applyDeviceTimezoneByKey(timezoneKey);
 }
@@ -2175,14 +2207,14 @@ void handleNavTouch(int x, int y) {
 // WEB SERVER
 // =========================================================
 void handleRoot() {
-  String accent = prefs.getString("accent", "cyan");
-  String bg     = prefs.getString("bg", "slate");
-  String txt    = prefs.getString("text", "standard");
-  String units  = prefs.getString("units", "metric");
-  String region = prefs.getString("region", "europe");
-  String tz     = sanitizeTimezoneKey(prefs.getString("tz", "europe_central"));
-  String nickname = prefs.getString("nickname", "");
-  bool flashMode = prefs.getBool("flashMode", false);
+  String accent = accentKey;
+  String bg     = bgKey;
+  String txt    = textColorKey;
+  String units  = unitKey;
+  String region = regionFormatKey;
+  String tz     = timezoneKey;
+  String nickname = buddyNickname;
+  bool flashMode = flashModeEnabled;
   String homeSlotKeys[HOME_SLOT_COUNT];
   for (int i = 0; i < HOME_SLOT_COUNT; i++) {
     homeSlotKeys[i] = prefs.getString((String("homeSlot") + String(i)).c_str(), homeWidgetKey(homeWidgetSlots[i]));
@@ -2277,50 +2309,19 @@ void handleRoot() {
   page += "<div class='color-row'><div class='color-meta'><label class='label'>Accent</label><span class='color-value' id='accent-value'>";
   page += accent;
   page += "</span></div><div class='swatch-row'>";
-  page += "<label class='swatch" + String(accent=="standard"?" active":"") + "' style='background:" + accentPreviewCss("standard") + ";'><input type='radio' name='accent' value='standard'" + String(accent=="standard"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="ice"?" active":"") + "' style='background:" + accentPreviewCss("ice") + ";'><input type='radio' name='accent' value='ice'" + String(accent=="ice"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="white"?" active":"") + "' style='background:" + accentPreviewCss("white") + ";'><input type='radio' name='accent' value='white'" + String(accent=="white"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="cyan"?" active":"") + "' style='background:" + accentPreviewCss("cyan") + ";'><input type='radio' name='accent' value='cyan'" + String(accent=="cyan"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="mint"?" active":"") + "' style='background:" + accentPreviewCss("mint") + ";'><input type='radio' name='accent' value='mint'" + String(accent=="mint"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="green"?" active":"") + "' style='background:" + accentPreviewCss("green") + ";'><input type='radio' name='accent' value='green'" + String(accent=="green"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="blue"?" active":"") + "' style='background:" + accentPreviewCss("blue") + ";'><input type='radio' name='accent' value='blue'" + String(accent=="blue"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="purple"?" active":"") + "' style='background:" + accentPreviewCss("purple") + ";'><input type='radio' name='accent' value='purple'" + String(accent=="purple"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="pink"?" active":"") + "' style='background:" + accentPreviewCss("pink") + ";'><input type='radio' name='accent' value='pink'" + String(accent=="pink"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="orange"?" active":"") + "' style='background:" + accentPreviewCss("orange") + ";'><input type='radio' name='accent' value='orange'" + String(accent=="orange"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="amber"?" active":"") + "' style='background:" + accentPreviewCss("amber") + ";'><input type='radio' name='accent' value='amber'" + String(accent=="amber"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(accent=="red"?" active":"") + "' style='background:" + accentPreviewCss("red") + ";'><input type='radio' name='accent' value='red'" + String(accent=="red"?" checked":"") + "></label>";
+  appendColorSwatches(page, "accent", accent, ACCENT_KEYS, ACCENT_KEY_COUNT, accentPreviewCss);
   page += "</div></div>";
 
   page += "<div class='color-row'><div class='color-meta'><label class='label'>Text</label><span class='color-value' id='text-value'>";
   page += txt;
   page += "</span></div><div class='swatch-row'>";
-  page += "<label class='swatch" + String(txt=="standard"?" active":"") + "' style='background:" + accentPreviewCss("standard") + ";'><input type='radio' name='text' value='standard'" + String(txt=="standard"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="ice"?" active":"") + "' style='background:" + accentPreviewCss("ice") + ";'><input type='radio' name='text' value='ice'" + String(txt=="ice"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="white"?" active":"") + "' style='background:" + accentPreviewCss("white") + ";'><input type='radio' name='text' value='white'" + String(txt=="white"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="cyan"?" active":"") + "' style='background:" + accentPreviewCss("cyan") + ";'><input type='radio' name='text' value='cyan'" + String(txt=="cyan"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="mint"?" active":"") + "' style='background:" + accentPreviewCss("mint") + ";'><input type='radio' name='text' value='mint'" + String(txt=="mint"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="green"?" active":"") + "' style='background:" + accentPreviewCss("green") + ";'><input type='radio' name='text' value='green'" + String(txt=="green"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="blue"?" active":"") + "' style='background:" + accentPreviewCss("blue") + ";'><input type='radio' name='text' value='blue'" + String(txt=="blue"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="purple"?" active":"") + "' style='background:" + accentPreviewCss("purple") + ";'><input type='radio' name='text' value='purple'" + String(txt=="purple"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="pink"?" active":"") + "' style='background:" + accentPreviewCss("pink") + ";'><input type='radio' name='text' value='pink'" + String(txt=="pink"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="orange"?" active":"") + "' style='background:" + accentPreviewCss("orange") + ";'><input type='radio' name='text' value='orange'" + String(txt=="orange"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="amber"?" active":"") + "' style='background:" + accentPreviewCss("amber") + ";'><input type='radio' name='text' value='amber'" + String(txt=="amber"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(txt=="red"?" active":"") + "' style='background:" + accentPreviewCss("red") + ";'><input type='radio' name='text' value='red'" + String(txt=="red"?" checked":"") + "></label>";
+  appendColorSwatches(page, "text", txt, ACCENT_KEYS, ACCENT_KEY_COUNT, accentPreviewCss);
   page += "</div></div>";
 
   page += "<div class='color-row'><div class='color-meta'><label class='label'>Theme</label><span class='color-value' id='bg-value'>";
   page += bg;
   page += "</span></div><div class='swatch-row'>";
-  page += "<label class='swatch" + String(bg=="slate"?" active":"") + "' style='background:" + themePreviewCss("slate") + ";'><input type='radio' name='bg' value='slate'" + String(bg=="slate"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="deep"?" active":"") + "' style='background:" + themePreviewCss("deep") + ";'><input type='radio' name='bg' value='deep'" + String(bg=="deep"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="nordic"?" active":"") + "' style='background:" + themePreviewCss("nordic") + ";'><input type='radio' name='bg' value='nordic'" + String(bg=="nordic"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="forest"?" active":"") + "' style='background:" + themePreviewCss("forest") + ";'><input type='radio' name='bg' value='forest'" + String(bg=="forest"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="coffee"?" active":"") + "' style='background:" + themePreviewCss("coffee") + ";'><input type='radio' name='bg' value='coffee'" + String(bg=="coffee"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="soft"?" active":"") + "' style='background:" + themePreviewCss("soft") + ";'><input type='radio' name='bg' value='soft'" + String(bg=="soft"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="midnight"?" active":"") + "' style='background:" + themePreviewCss("midnight") + ";'><input type='radio' name='bg' value='midnight'" + String(bg=="midnight"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="graphite"?" active":"") + "' style='background:" + themePreviewCss("graphite") + ";'><input type='radio' name='bg' value='graphite'" + String(bg=="graphite"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="garnet"?" active":"") + "' style='background:" + themePreviewCss("garnet") + ";'><input type='radio' name='bg' value='garnet'" + String(bg=="garnet"?" checked":"") + "></label>";
-  page += "<label class='swatch" + String(bg=="ochre"?" active":"") + "' style='background:" + themePreviewCss("ochre") + ";'><input type='radio' name='bg' value='ochre'" + String(bg=="ochre"?" checked":"") + "></label>";
+  appendColorSwatches(page, "bg", bg, BG_KEYS, BG_KEY_COUNT, themePreviewCss);
   page += "</div></div>";
 
   page += "</div>";
@@ -2428,11 +2429,11 @@ void handleRoot() {
 
 void handleSave() {
   String newNotes  = server.hasArg("notes") ? server.arg("notes") : notesText;
-  String newAccent = server.hasArg("accent") ? server.arg("accent") : "cyan";
-  String newBg     = server.hasArg("bg") ? server.arg("bg") : "slate";
-  String newText   = server.hasArg("text") ? server.arg("text") : "standard";
-  String newUnits  = server.hasArg("units") ? server.arg("units") : "metric";
-  String newRegion = server.hasArg("region") ? server.arg("region") : "europe";
+  String newAccent = server.hasArg("accent") ? server.arg("accent") : accentKey;
+  String newBg     = server.hasArg("bg") ? server.arg("bg") : bgKey;
+  String newText   = server.hasArg("text") ? server.arg("text") : textColorKey;
+  String newUnits  = server.hasArg("units") ? server.arg("units") : unitKey;
+  String newRegion = server.hasArg("region") ? server.arg("region") : regionFormatKey;
   String newTz     = server.hasArg("tz") ? server.arg("tz") : timezoneKey;
   String newLoc    = server.hasArg("locname") ? server.arg("locname") : locationName;
   String newNickname = server.hasArg("nickname") ? server.arg("nickname") : buddyNickname;
@@ -2454,8 +2455,8 @@ void handleSave() {
   if (newNotes.length() > 700) newNotes = newNotes.substring(0, 700);
   if (newLoc.length() == 0) newLoc = "Unknown";
   if (newNickname.length() > 24) newNickname = newNickname.substring(0, 24);
-  if (newUnits != "metric" && newUnits != "imperial") newUnits = "metric";
-  if (newRegion != "europe" && newRegion != "us") newRegion = "europe";
+  if (newUnits != "metric" && newUnits != "imperial") newUnits = "imperial";
+  if (newRegion != "europe" && newRegion != "us") newRegion = "us";
   newTz = sanitizeTimezoneKey(newTz);
 
   int newSleepMin = server.hasArg("sleepMin") ? server.arg("sleepMin").toInt() : sleepIntervalMin;
@@ -2472,6 +2473,9 @@ void handleSave() {
   locationName = newLoc;
   LAT = newLat;
   LNG = newLng;
+  accentKey = newAccent;
+  bgKey = newBg;
+  textColorKey = newText;
   unitKey = newUnits;
   regionFormatKey = newRegion;
   timezoneKey = newTz;
@@ -2488,9 +2492,9 @@ void handleSave() {
   }
 
   prefs.putString("notes", notesText);
-  prefs.putString("accent", newAccent);
-  prefs.putString("bg", newBg);
-  prefs.putString("text", newText);
+  prefs.putString("accent", accentKey);
+  prefs.putString("bg", bgKey);
+  prefs.putString("text", textColorKey);
   prefs.putString("units", unitKey);
   prefs.putString("region", regionFormatKey);
   prefs.putString("tz", timezoneKey);
@@ -2509,8 +2513,8 @@ void handleSave() {
     prefs.putInt(key.c_str(), timerPresetMin[i]);
   }
 
-  applyThemeByKey(newAccent, newBg);
-  applyTextColorByKey(newText);
+  applyThemeByKey(accentKey, bgKey);
+  applyTextColorByKey(textColorKey);
   applyDeviceTimezoneByKey(timezoneKey);
   if (!sleepDimmed && !sleepOff) setBacklight(BL_FULL);
 
