@@ -165,6 +165,7 @@ const unsigned long RADAR_FETCH_INTERVAL_MS = 8000UL;
 volatile bool radarDirty = true;
 SemaphoreHandle_t radarDataMutex = nullptr;
 volatile bool radarFetchInProgress = false;
+volatile bool radarDataLoaded = false;
 
 String buddyNickname = "";
 
@@ -1373,7 +1374,10 @@ bool fetchRadarAircraft() {
 }
 
 void radarFetchTaskFn(void *param) {
-  if (fetchRadarAircraft()) radarDirty = true;
+  if (fetchRadarAircraft()) {
+    radarDirty = true;
+    radarDataLoaded = true;
+  }
   lastRadarFetch = millis();
   radarFetchInProgress = false;
   vTaskDelete(nullptr);
@@ -2006,9 +2010,22 @@ void radarDrawAircraft() {
   tft.setTextDatum(TL_DATUM);
 }
 
+void radarDrawLoadedIndicator() {
+  const int x = 8;
+  const int y = SCREEN_H - NAV_H - 10;
+  if (radarDataLoaded) {
+    tft.fillCircle(x, y, 3, COL_GREEN);
+    tft.setTextColor(COL_DIM, COL_BG);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("Loaded", x + 7, y, 1);
+    tft.setTextDatum(TL_DATUM);
+  }
+}
+
 void radarRenderFrame() {
   radarDrawGrid();
   radarDrawAircraft();
+  radarDrawLoadedIndicator();
 }
 
 void drawRadarPageFull() {
