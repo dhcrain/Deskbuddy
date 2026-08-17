@@ -1,5 +1,5 @@
 // Deskbuddy V.8
-// Nav: Home / Weather / Notes / Status
+// Nav: Home / Weather / Radar / Status
 // Full version
 // - KP dots replaced with Low / Medium / High / Extreme text
 // - KP level text uses same small font as wind direction and stays inside the box
@@ -10,6 +10,9 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <WiFiClientSecure.h>
 #include <TFT_eSPI.h>
 #include <time.h>
@@ -132,10 +135,37 @@ const int PAGE_ROW3_Y = 198;
 const int PAGE_WIDGET_H = HOME_WIDGET_H;
 
 // =========================================================
-// NOTES
+// RADAR (ADS-B plane radar, via adsb.fi)
 // =========================================================
-String notesText = "No notes yet.";
-bool notesDirty = true;
+struct RadarAircraft {
+  float lat;
+  float lon;
+  float trackDeg;
+  bool hasTrack;
+  String callsign;
+  String altText;
+};
+
+const int RADAR_MAX_AIRCRAFT = 20;
+RadarAircraft radarAircraft[RADAR_MAX_AIRCRAFT];
+int radarAircraftCount = 0;
+
+struct RadarRangePreset { float km; };
+const RadarRangePreset RADAR_RANGES[] = { {5.0f}, {10.0f}, {15.0f}, {25.0f} };
+const int RADAR_RANGE_COUNT = 4;
+int radarRangeIndex = 1;
+
+const int RADAR_CX = 120;
+const int RADAR_CY = 155;
+const int RADAR_OUTER_R = 88;
+const int RADAR_RING_COUNT = 3;
+
+volatile unsigned long lastRadarFetch = 0;
+const unsigned long RADAR_FETCH_INTERVAL_MS = 8000UL;
+volatile bool radarDirty = true;
+SemaphoreHandle_t radarDataMutex = nullptr;
+volatile bool radarFetchInProgress = false;
+
 String buddyNickname = "";
 
 enum HomeWidgetType {
@@ -165,7 +195,7 @@ String cacheHomeSlots[HOME_SLOT_COUNT];
 enum Page {
   PAGE_HOME = 0,
   PAGE_WEATHER = 1,
-  PAGE_NOTES = 2,
+  PAGE_RADAR = 2,
   PAGE_STATUS = 3
 };
 
@@ -208,7 +238,6 @@ String lastWindText = "";
 String lastWindDirText = "";
 String lastNextSunLabel = "";
 String lastNextSunTime = "";
-String lastNotesText = "";
 String lastNetworkToggleText = "";
 
 const char* homeWidgetKey(HomeWidgetType type) {
@@ -1026,7 +1055,8 @@ void loadStoredSettings() {
   bgKey     = prefs.getString("bg", bgKey);
   String txt    = prefs.getString("text", "standard");
 
-  notesText        = prefs.getString("notes", "No notes yet.");
+  radarRangeIndex  = prefs.getUChar("radarRange", 1);
+  if (radarRangeIndex >= RADAR_RANGE_COUNT) radarRangeIndex = 1;
   buddyNickname    = prefs.getString("nickname", "");
   locationName     = prefs.getString("locname", locationName);
   LAT              = prefs.getFloat("lat", LAT);
@@ -1121,17 +1151,13 @@ bool touchNewPress(int& tx, int& ty) {
 // =========================================================
 // API
 // =========================================================
-bool fetchSunriseSunset() {
-  if (WiFi.status() != WL_CONNECTED) return false;
-
+bool httpsGetBody(const String &url, String &outBody, unsigned long timeoutMs = 0) {
   WiFiClientSecure client;
   client.setInsecure();
 
-  String url = String("https://api.sunrise-sunset.org/json?lat=") + String(LAT, 4) +
-               "&lng=" + String(LNG, 4) + "&formatted=0";
-
   HTTPClient http;
   if (!http.begin(client, url)) return false;
+  if (timeoutMs > 0) http.setTimeout(timeoutMs);
 
   int code = http.GET();
   if (code != 200) {
@@ -1139,8 +1165,19 @@ bool fetchSunriseSunset() {
     return false;
   }
 
-  String body = http.getString();
+  outBody = http.getString();
   http.end();
+  return true;
+}
+
+bool fetchSunriseSunset() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  String url = String("https://api.sunrise-sunset.org/json?lat=") + String(LAT, 4) +
+               "&lng=" + String(LNG, 4) + "&formatted=0";
+
+  String body;
+  if (!httpsGetBody(url, body)) return false;
 
   StaticJsonDocument<1024> doc;
   if (deserializeJson(doc, body)) return false;
@@ -1199,9 +1236,6 @@ void ensureSunTimesForToday() {
 bool fetchWeather() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") + String(LAT, 4) +
                "&longitude=" + String(LNG, 4) +
                "&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index" +
@@ -1209,17 +1243,8 @@ bool fetchWeather() {
                "&daily=temperature_2m_max,temperature_2m_min" +
                "&forecast_days=1&timezone=auto&wind_speed_unit=ms";
 
-  HTTPClient http;
-  if (!http.begin(client, url)) return false;
-
-  int code = http.GET();
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-
-  String body = http.getString();
-  http.end();
+  String body;
+  if (!httpsGetBody(url, body)) return false;
 
   StaticJsonDocument<4096> doc;
   if (deserializeJson(doc, body)) return false;
@@ -1276,22 +1301,10 @@ void ensureWeather() {
 bool fetchKpIndex() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  HTTPClient http;
-  if (!http.begin(client, "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")) {
+  String body;
+  if (!httpsGetBody("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json", body)) {
     return false;
   }
-
-  int code = http.GET();
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-
-  String body = http.getString();
-  http.end();
 
   int lastRow = body.lastIndexOf('[');
   if (lastRow < 0) return false;
@@ -1318,6 +1331,92 @@ void ensureKpIndex() {
       WiFi.status() == WL_CONNECTED) {
     if (fetchKpIndex()) dataDirty = true;
   }
+}
+
+// =========================================================
+// RADAR DATA
+// =========================================================
+String radarRangeLabel(int idx) {
+  float km = RADAR_RANGES[idx].km;
+  if (unitKey == "imperial") {
+    return String((int)lroundf(km / 1.609344f)) + " mi";
+  }
+  return String((int)lroundf(km)) + " km";
+}
+
+void radarLatLonToXY(float lat, float lon, int &outX, int &outY) {
+  float rangeKm = RADAR_RANGES[radarRangeIndex].km;
+  float pxPerKm = (float)RADAR_OUTER_R / rangeKm;
+  float latCorrection = cosf(LAT * 0.01745329252f);
+  float lonDelta = lon - LNG;
+  if (lonDelta > 180.0f) lonDelta -= 360.0f;
+  else if (lonDelta < -180.0f) lonDelta += 360.0f;
+  float dxKm = lonDelta * 111.0f * latCorrection;
+  float dyKm = (lat - LAT) * 111.0f;
+  outX = RADAR_CX + (int)lroundf(dxKm * pxPerKm);
+  outY = RADAR_CY - (int)lroundf(dyKm * pxPerKm);
+}
+
+bool fetchRadarAircraft() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  float rangeNm = RADAR_RANGES[radarRangeIndex].km / 1.852f;
+
+  String url = "https://opendata.adsb.fi/api/v3/lat/" + String(LAT, 6) +
+               "/lon/" + String(LNG, 6) + "/dist/" + String(rangeNm, 1);
+
+  String body;
+  if (!httpsGetBody(url, body, 8000)) return false;
+
+  JsonDocument filter;
+  filter["ac"][0]["lat"] = true;
+  filter["ac"][0]["lon"] = true;
+  filter["ac"][0]["track"] = true;
+  filter["ac"][0]["flight"] = true;
+  filter["ac"][0]["hex"] = true;
+  filter["ac"][0]["alt_baro"] = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return false;
+
+  JsonArray ac = doc["ac"].as<JsonArray>();
+
+  xSemaphoreTake(radarDataMutex, portMAX_DELAY);
+  radarAircraftCount = 0;
+  if (!ac.isNull()) {
+    for (JsonObject plane : ac) {
+      if (radarAircraftCount >= RADAR_MAX_AIRCRAFT) break;
+      if (!plane["lat"].is<float>() || !plane["lon"].is<float>()) continue;
+      if (plane["alt_baro"] == "ground") continue;
+
+      RadarAircraft &a = radarAircraft[radarAircraftCount];
+      a.lat = plane["lat"].as<float>();
+      a.lon = plane["lon"].as<float>();
+      a.hasTrack = plane["track"].is<float>();
+      a.trackDeg = a.hasTrack ? plane["track"].as<float>() : 0.0f;
+
+      String callsign = plane["flight"] | "";
+      callsign.trim();
+      if (callsign.length() == 0) callsign = plane["hex"] | "";
+      a.callsign = callsign;
+
+      a.altText = plane["alt_baro"].is<float>()
+        ? String((int)plane["alt_baro"].as<float>()) + "ft"
+        : "";
+
+      radarAircraftCount++;
+    }
+  }
+  xSemaphoreGive(radarDataMutex);
+
+  return true;
+}
+
+void radarFetchTaskFn(void *param) {
+  if (fetchRadarAircraft()) radarDirty = true;
+  lastRadarFetch = millis();
+  radarFetchInProgress = false;
+  vTaskDelete(nullptr);
 }
 
 // =========================================================
@@ -1360,7 +1459,7 @@ void drawNavBar() {
   tft.drawFastHLine(0, y, SCREEN_W, COL_STROKE);
 
   const int btnW = SCREEN_W / 4;
-  const char* names[4] = {"Home", "Weather", "Notes", "Status"};
+  const char* names[4] = {"Home", "Weather", "Radar", "Status"};
 
   for (int i = 0; i < 4; i++) {
     int bx = i * btnW;
@@ -1408,87 +1507,6 @@ void drawCleanSunIcon(TFT_eSprite& spr, int cx, int cy, uint16_t c) {
 void drawMoonIcon(TFT_eSprite& spr, int cx, int cy, uint16_t c) {
   spr.fillCircle(cx, cy, 6, c);
   spr.fillCircle(cx + 4, cy - 2, 6, COL_PANEL);
-}
-
-int drawWrappedTextLimited(int x, int y, int maxW, const String& text, int font, uint16_t fg, uint16_t bg, int maxLines) {
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(fg, bg);
-
-  const int lineH = tft.fontHeight(font) + 2;
-  String line = "";
-  String word = "";
-  int linesDrawn = 0;
-
-  auto flushLine = [&]() {
-    if (linesDrawn >= maxLines) return;
-    if (line.length() > 0) tft.drawString(line, x, y, font);
-    y += lineH;
-    line = "";
-    linesDrawn++;
-  };
-
-  auto placeWordOnEmptyLine = [&]() {
-    if (word.length() == 0 || linesDrawn >= maxLines) return;
-
-    while (tft.textWidth(word, font) > maxW && word.length() > 1) {
-      int cut = word.length();
-      while (cut > 1 && tft.textWidth(word.substring(0, cut), font) > maxW) cut--;
-      if (linesDrawn >= maxLines) return;
-      tft.drawString(word.substring(0, cut), x, y, font);
-      y += lineH;
-      linesDrawn++;
-      word = word.substring(cut);
-    }
-
-    if (linesDrawn < maxLines) {
-      line = word;
-      word = "";
-    }
-  };
-
-  auto flushWord = [&]() {
-    if (word.length() == 0 || linesDrawn >= maxLines) return;
-
-    if (line.length() == 0) {
-      placeWordOnEmptyLine();
-      return;
-    }
-
-    String candidate = line + " " + word;
-    if (tft.textWidth(candidate, font) <= maxW) {
-      line = candidate;
-      word = "";
-      return;
-    }
-
-    flushLine();
-    placeWordOnEmptyLine();
-  };
-
-  for (int i = 0; i < (int)text.length(); i++) {
-    if (linesDrawn >= maxLines) break;
-    char c = text[i];
-
-    if (c == '\n') {
-      flushWord();
-      flushLine();
-      continue;
-    }
-
-    if (c == ' ') {
-      flushWord();
-      continue;
-    }
-
-    word += c;
-  }
-
-  if (linesDrawn < maxLines) {
-    flushWord();
-    if (line.length() > 0) flushLine();
-  }
-
-  return y;
 }
 
 // =========================================================
@@ -1956,24 +1974,105 @@ void updateWeatherDynamic() {
   }
 }
 
-void drawNotesPageFull() {
-  tft.fillScreen(COL_BG);
-  drawTopBar("Notes");
-  drawNavBar();
+void radarDrawGrid() {
+  const int cx = RADAR_CX, cy = RADAR_CY, r = RADAR_OUTER_R;
 
-  drawCard(8, 42, 224, 226, true);
+  tft.fillCircle(cx, cy, r, TFT_BLACK);
+  for (int i = 1; i <= RADAR_RING_COUNT; i++) {
+    tft.drawCircle(cx, cy, (r * i) / RADAR_RING_COUNT, COL_STROKE);
+  }
+  tft.drawCircle(cx, cy, r, COL_ACCENT);
+  tft.drawFastHLine(cx - r, cy, r * 2, COL_STROKE);
+  tft.drawFastVLine(cx, cy - r, r * 2, COL_STROKE);
+  tft.fillCircle(cx, cy, 2, COL_ACCENT);
 
-  pageDirty = false;
-  lastDrawnPage = PAGE_NOTES;
-  lastNotesText = "";
+  tft.setTextColor(COL_TEXT);
+  tft.setTextDatum(BC_DATUM);
+  tft.drawString("N", cx, cy - r - 4, 2);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("S", cx, cy + r + 4, 2);
+  tft.setTextDatum(MR_DATUM);
+  tft.drawString("W", cx - r - 6, cy, 2);
+  tft.setTextDatum(ML_DATUM);
+  tft.drawString("E", cx + r + 6, cy, 2);
+
+  tft.setTextColor(COL_DIM);
+  tft.setTextDatum(MR_DATUM);
+  tft.drawString(radarRangeLabel(radarRangeIndex), cx + r + 6, cy + r - 4, 1);
+
+  tft.setTextDatum(TL_DATUM);
 }
 
-void updateNotesDynamic() {
-  if (notesText != lastNotesText || notesDirty) {
-    tft.fillRect(18, 54, 204, 196, COL_PANEL);
-    drawWrappedTextLimited(18, 54, 198, notesText, 2, COL_TEXT, COL_PANEL, 12);
-    lastNotesText = notesText;
-    notesDirty = false;
+void radarDrawAircraft() {
+  xSemaphoreTake(radarDataMutex, portMAX_DELAY);
+  for (int i = 0; i < radarAircraftCount; i++) {
+    RadarAircraft &a = radarAircraft[i];
+    int x, y;
+    radarLatLonToXY(a.lat, a.lon, x, y);
+
+    int dx = x - RADAR_CX;
+    int dy = y - RADAR_CY;
+    if (dx * dx + dy * dy > RADAR_OUTER_R * RADAR_OUTER_R) continue;
+
+    if (a.hasTrack) {
+      float rad = a.trackDeg * 0.01745329252f;
+      float sinH = sinf(rad), cosH = cosf(rad);
+      int noseX = x + (int)lroundf(sinH * 7.0f);
+      int noseY = y - (int)lroundf(cosH * 7.0f);
+      int tailX = x - (int)lroundf(sinH * 3.0f);
+      int tailY = y + (int)lroundf(cosH * 3.0f);
+      int wingX = (int)lroundf(cosH * 4.0f);
+      int wingY = (int)lroundf(sinH * 4.0f);
+      tft.fillTriangle(noseX, noseY, tailX + wingX, tailY + wingY, tailX - wingX, tailY - wingY, COL_ACCENT);
+    } else {
+      tft.fillCircle(x, y, 3, COL_ACCENT);
+    }
+
+    if (a.callsign.length() > 0) {
+      bool labelRight = x < RADAR_CX;
+      tft.setTextColor(COL_TEXT);
+      if (labelRight) {
+        tft.setTextDatum(ML_DATUM);
+        tft.drawString(a.callsign, x + 8, y - 5, 1);
+        if (a.altText.length() > 0) tft.drawString(a.altText, x + 8, y + 5, 1);
+      } else {
+        tft.setTextDatum(MR_DATUM);
+        tft.drawString(a.callsign, x - 8, y - 5, 1);
+        if (a.altText.length() > 0) tft.drawString(a.altText, x - 8, y + 5, 1);
+      }
+    }
+  }
+  xSemaphoreGive(radarDataMutex);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void radarRenderFrame() {
+  radarDrawGrid();
+  radarDrawAircraft();
+}
+
+void drawRadarPageFull() {
+  tft.fillScreen(COL_BG);
+  drawTopBar("Radar");
+  drawNavBar();
+
+  radarRenderFrame();
+
+  pageDirty = false;
+  lastDrawnPage = PAGE_RADAR;
+  radarDirty = false;
+}
+
+void updateRadarDynamic() {
+  if (!radarFetchInProgress && WiFi.status() == WL_CONNECTED &&
+      millis() - lastRadarFetch >= RADAR_FETCH_INTERVAL_MS) {
+    radarFetchInProgress = true;
+    xTaskCreatePinnedToCore(radarFetchTaskFn, "radarFetch", 16384, nullptr, 1, nullptr, 0);
+  }
+
+  if (radarDirty) {
+    radarRenderFrame();
+    radarDirty = false;
   }
 }
 
@@ -2063,7 +2162,7 @@ void drawCurrentPageFull() {
   switch (currentPage) {
     case PAGE_HOME:    drawHomePageFull(); break;
     case PAGE_WEATHER: drawWeatherPageFull(); break;
-    case PAGE_NOTES:   drawNotesPageFull(); break;
+    case PAGE_RADAR:   drawRadarPageFull(); break;
     case PAGE_STATUS:  drawStatusPageFull(); break;
   }
 
@@ -2085,7 +2184,7 @@ void updateCurrentPageDynamic() {
   switch (currentPage) {
     case PAGE_HOME:    updateHomeDynamic(); break;
     case PAGE_WEATHER: updateWeatherDynamic(); break;
-    case PAGE_NOTES:   updateNotesDynamic(); break;
+    case PAGE_RADAR:   updateRadarDynamic(); break;
     case PAGE_STATUS:  updateStatusDynamic(); break;
   }
 }
@@ -2186,6 +2285,20 @@ bool handleStatusTouch(int x, int y) {
   return false;
 }
 
+bool handleRadarTouch(int x, int y) {
+  if (currentPage != PAGE_RADAR) return false;
+
+  int dx = x - RADAR_CX;
+  int dy = y - RADAR_CY;
+  if (dx * dx + dy * dy > RADAR_OUTER_R * RADAR_OUTER_R) return false;
+
+  radarRangeIndex = (radarRangeIndex + 1) % RADAR_RANGE_COUNT;
+  prefs.putUChar("radarRange", (uint8_t)radarRangeIndex);
+  lastRadarFetch = 0;
+  pageDirty = true;
+  return true;
+}
+
 // =========================================================
 // NAVIGATION
 // =========================================================
@@ -2200,6 +2313,7 @@ void handleNavTouch(int x, int y) {
   if (newPage != currentPage) {
     currentPage = newPage;
     pageDirty = true;
+    if (newPage == PAGE_RADAR) lastRadarFetch = 0;
   }
 }
 
@@ -2279,7 +2393,7 @@ void handleRoot() {
   page += "</style></head><body><div class='wrap'>";
   page += "<div class='hero'>";
   page += "<h1>Deskbuddy</h1>";
-  page += "<p>Shape Deskbuddy into your own desk companion with widgets, notes, colors, and smart daily tools.</p>";
+  page += "<p>Shape Deskbuddy into your own desk companion with widgets, plane radar, colors, and smart daily tools.</p>";
   page += "<div class='ip'>ESP IP: ";
   page += WiFi.localIP().toString();
   page += "</div></div>";
@@ -2287,15 +2401,16 @@ void handleRoot() {
   page += "<form method='POST' action='/save'>";
   page += "<div class='layout'><div class='stack'>";
 
-  page += "<div class='panel' data-panel='notes'>";
-  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>Notes</h2><span class='panel-chevron'>&#9662;</span></button>";
+  page += "<div class='panel' data-panel='radar'>";
+  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>Plane radar</h2><span class='panel-chevron'>&#9662;</span></button>";
   page += "<div class='panel-body'>";
-  page += "<p>Short notes synced to the device.</p>";
-  page += "<label class='label'>Notes</label>";
-  page += "<textarea name='notes' maxlength='700'>";
-  page += htmlEscape(notesText);
-  page += "</textarea>";
-  page += "<div class='muted'>Saved notes show up right away.</div>";
+  page += "<p>Live aircraft near your saved location (see Location below), from adsb.fi open data.</p>";
+  page += "<label class='label'>Radar range</label><select name='radarRange'>";
+  for (int i = 0; i < RADAR_RANGE_COUNT; i++) {
+    page += "<option value='" + String(i) + "'" + String(radarRangeIndex == i ? " selected" : "") + ">" + radarRangeLabel(i) + "</option>";
+  }
+  page += "</select>";
+  page += "<div class='muted'>Tap the radar screen on the device to cycle range too.</div>";
   page += "</div></div>";
 
   page += "<div class='panel' data-panel='theme'>";
@@ -2428,7 +2543,7 @@ void handleRoot() {
 }
 
 void handleSave() {
-  String newNotes  = server.hasArg("notes") ? server.arg("notes") : notesText;
+  int newRadarRange = server.hasArg("radarRange") ? server.arg("radarRange").toInt() : radarRangeIndex;
   String newAccent = server.hasArg("accent") ? server.arg("accent") : accentKey;
   String newBg     = server.hasArg("bg") ? server.arg("bg") : bgKey;
   String newText   = server.hasArg("text") ? server.arg("text") : textColorKey;
@@ -2447,12 +2562,10 @@ void handleSave() {
   float newLat = server.hasArg("lat") ? server.arg("lat").toFloat() : LAT;
   float newLng = server.hasArg("lng") ? server.arg("lng").toFloat() : LNG;
 
-  newNotes.trim();
   newLoc.trim();
   newNickname.trim();
 
-  if (newNotes.length() == 0) newNotes = "No notes yet.";
-  if (newNotes.length() > 700) newNotes = newNotes.substring(0, 700);
+  radarRangeIndex = constrain(newRadarRange, 0, RADAR_RANGE_COUNT - 1);
   if (newLoc.length() == 0) newLoc = "Unknown";
   if (newNickname.length() > 24) newNickname = newNickname.substring(0, 24);
   if (newUnits != "metric" && newUnits != "imperial") newUnits = "imperial";
@@ -2468,7 +2581,6 @@ void handleSave() {
     (fabsf(newLng - LNG) > 0.0001f) ||
     (newLoc != locationName);
 
-  notesText = newNotes;
   buddyNickname = newNickname;
   locationName = newLoc;
   LAT = newLat;
@@ -2491,7 +2603,7 @@ void handleSave() {
     timerPresetMin[i] = sanitizeTimerMinutes(nextValue);
   }
 
-  prefs.putString("notes", notesText);
+  prefs.putUChar("radarRange", (uint8_t)radarRangeIndex);
   prefs.putString("accent", accentKey);
   prefs.putString("bg", bgKey);
   prefs.putString("text", textColorKey);
@@ -2518,7 +2630,7 @@ void handleSave() {
   applyDeviceTimezoneByKey(timezoneKey);
   if (!sleepDimmed && !sleepOff) setBacklight(BL_FULL);
 
-  notesDirty = true;
+  lastRadarFetch = 0;
   pageDirty = true;
   dataDirty = true;
 
@@ -2657,6 +2769,8 @@ void setup() {
   ts.begin(touchSPI);
   ts.setRotation(ROT);
 
+  radarDataMutex = xSemaphoreCreateMutex();
+
   tft.drawString("Connecting WiFi...", 10, 34, 2);
   connectWiFi(true);
 
@@ -2673,7 +2787,6 @@ void setup() {
 
   pageDirty = true;
   dataDirty = true;
-  notesDirty = true;
 
   drawCurrentPageFull();
   updateCurrentPageDynamic();
@@ -2720,12 +2833,12 @@ void loop() {
         if (!manualDimMode) {
           wakeDisplay();
         } else {
-          if (!handleHomeTouch(tx, ty) && !handleStatusTouch(tx, ty)) {
+          if (!handleHomeTouch(tx, ty) && !handleStatusTouch(tx, ty) && !handleRadarTouch(tx, ty)) {
             handleNavTouch(tx, ty);
           }
         }
       } else {
-        if (!handleHomeTouch(tx, ty) && !handleStatusTouch(tx, ty)) {
+        if (!handleHomeTouch(tx, ty) && !handleStatusTouch(tx, ty) && !handleRadarTouch(tx, ty)) {
           handleNavTouch(tx, ty);
         }
       }
