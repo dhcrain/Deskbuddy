@@ -10,6 +10,9 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <WiFiClientSecure.h>
 #include <TFT_eSPI.h>
 #include <time.h>
@@ -157,9 +160,11 @@ const int RADAR_CY = 155;
 const int RADAR_OUTER_R = 88;
 const int RADAR_RING_COUNT = 3;
 
-unsigned long lastRadarFetch = 0;
+volatile unsigned long lastRadarFetch = 0;
 const unsigned long RADAR_FETCH_INTERVAL_MS = 8000UL;
-bool radarDirty = true;
+volatile bool radarDirty = true;
+SemaphoreHandle_t radarDataMutex = nullptr;
+volatile bool radarFetchInProgress = false;
 
 String buddyNickname = "";
 
@@ -1146,17 +1151,13 @@ bool touchNewPress(int& tx, int& ty) {
 // =========================================================
 // API
 // =========================================================
-bool fetchSunriseSunset() {
-  if (WiFi.status() != WL_CONNECTED) return false;
-
+bool httpsGetBody(const String &url, String &outBody, unsigned long timeoutMs = 0) {
   WiFiClientSecure client;
   client.setInsecure();
 
-  String url = String("https://api.sunrise-sunset.org/json?lat=") + String(LAT, 4) +
-               "&lng=" + String(LNG, 4) + "&formatted=0";
-
   HTTPClient http;
   if (!http.begin(client, url)) return false;
+  if (timeoutMs > 0) http.setTimeout(timeoutMs);
 
   int code = http.GET();
   if (code != 200) {
@@ -1164,8 +1165,19 @@ bool fetchSunriseSunset() {
     return false;
   }
 
-  String body = http.getString();
+  outBody = http.getString();
   http.end();
+  return true;
+}
+
+bool fetchSunriseSunset() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  String url = String("https://api.sunrise-sunset.org/json?lat=") + String(LAT, 4) +
+               "&lng=" + String(LNG, 4) + "&formatted=0";
+
+  String body;
+  if (!httpsGetBody(url, body)) return false;
 
   StaticJsonDocument<1024> doc;
   if (deserializeJson(doc, body)) return false;
@@ -1224,9 +1236,6 @@ void ensureSunTimesForToday() {
 bool fetchWeather() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") + String(LAT, 4) +
                "&longitude=" + String(LNG, 4) +
                "&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index" +
@@ -1234,17 +1243,8 @@ bool fetchWeather() {
                "&daily=temperature_2m_max,temperature_2m_min" +
                "&forecast_days=1&timezone=auto&wind_speed_unit=ms";
 
-  HTTPClient http;
-  if (!http.begin(client, url)) return false;
-
-  int code = http.GET();
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-
-  String body = http.getString();
-  http.end();
+  String body;
+  if (!httpsGetBody(url, body)) return false;
 
   StaticJsonDocument<4096> doc;
   if (deserializeJson(doc, body)) return false;
@@ -1301,22 +1301,10 @@ void ensureWeather() {
 bool fetchKpIndex() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  HTTPClient http;
-  if (!http.begin(client, "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")) {
+  String body;
+  if (!httpsGetBody("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json", body)) {
     return false;
   }
-
-  int code = http.GET();
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-
-  String body = http.getString();
-  http.end();
 
   int lastRow = body.lastIndexOf('[');
   if (lastRow < 0) return false;
@@ -1348,8 +1336,8 @@ void ensureKpIndex() {
 // =========================================================
 // RADAR DATA
 // =========================================================
-String radarRangeLabel() {
-  float km = RADAR_RANGES[radarRangeIndex].km;
+String radarRangeLabel(int idx) {
+  float km = RADAR_RANGES[idx].km;
   if (unitKey == "imperial") {
     return String((int)lroundf(km / 1.609344f)) + " mi";
   }
@@ -1360,7 +1348,10 @@ void radarLatLonToXY(float lat, float lon, int &outX, int &outY) {
   float rangeKm = RADAR_RANGES[radarRangeIndex].km;
   float pxPerKm = (float)RADAR_OUTER_R / rangeKm;
   float latCorrection = cosf(LAT * 0.01745329252f);
-  float dxKm = (lon - LNG) * 111.0f * latCorrection;
+  float lonDelta = lon - LNG;
+  if (lonDelta > 180.0f) lonDelta -= 360.0f;
+  else if (lonDelta < -180.0f) lonDelta += 360.0f;
+  float dxKm = lonDelta * 111.0f * latCorrection;
   float dyKm = (lat - LAT) * 111.0f;
   outX = RADAR_CX + (int)lroundf(dxKm * pxPerKm);
   outY = RADAR_CY - (int)lroundf(dyKm * pxPerKm);
@@ -1371,24 +1362,11 @@ bool fetchRadarAircraft() {
 
   float rangeNm = RADAR_RANGES[radarRangeIndex].km / 1.852f;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
   String url = "https://opendata.adsb.fi/api/v3/lat/" + String(LAT, 6) +
                "/lon/" + String(LNG, 6) + "/dist/" + String(rangeNm, 1);
 
-  HTTPClient http;
-  if (!http.begin(client, url)) return false;
-  http.setTimeout(8000);
-
-  int code = http.GET();
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-
-  String body = http.getString();
-  http.end();
+  String body;
+  if (!httpsGetBody(url, body, 8000)) return false;
 
   JsonDocument filter;
   filter["ac"][0]["lat"] = true;
@@ -1402,6 +1380,8 @@ bool fetchRadarAircraft() {
   if (deserializeJson(doc, body, DeserializationOption::Filter(filter))) return false;
 
   JsonArray ac = doc["ac"].as<JsonArray>();
+
+  xSemaphoreTake(radarDataMutex, portMAX_DELAY);
   radarAircraftCount = 0;
   if (!ac.isNull()) {
     for (JsonObject plane : ac) {
@@ -1427,9 +1407,16 @@ bool fetchRadarAircraft() {
       radarAircraftCount++;
     }
   }
+  xSemaphoreGive(radarDataMutex);
 
-  lastRadarFetch = millis();
   return true;
+}
+
+void radarFetchTaskFn(void *param) {
+  if (fetchRadarAircraft()) radarDirty = true;
+  lastRadarFetch = millis();
+  radarFetchInProgress = false;
+  vTaskDelete(nullptr);
 }
 
 // =========================================================
@@ -2011,12 +1998,13 @@ void radarDrawGrid() {
 
   tft.setTextColor(COL_DIM);
   tft.setTextDatum(MR_DATUM);
-  tft.drawString(radarRangeLabel(), cx + r + 6, cy + r - 4, 1);
+  tft.drawString(radarRangeLabel(radarRangeIndex), cx + r + 6, cy + r - 4, 1);
 
   tft.setTextDatum(TL_DATUM);
 }
 
 void radarDrawAircraft() {
+  xSemaphoreTake(radarDataMutex, portMAX_DELAY);
   for (int i = 0; i < radarAircraftCount; i++) {
     RadarAircraft &a = radarAircraft[i];
     int x, y;
@@ -2054,6 +2042,7 @@ void radarDrawAircraft() {
       }
     }
   }
+  xSemaphoreGive(radarDataMutex);
   tft.setTextDatum(TL_DATUM);
 }
 
@@ -2075,9 +2064,10 @@ void drawRadarPageFull() {
 }
 
 void updateRadarDynamic() {
-  if (WiFi.status() == WL_CONNECTED && millis() - lastRadarFetch >= RADAR_FETCH_INTERVAL_MS) {
-    if (fetchRadarAircraft()) radarDirty = true;
-    else lastRadarFetch = millis();
+  if (!radarFetchInProgress && WiFi.status() == WL_CONNECTED &&
+      millis() - lastRadarFetch >= RADAR_FETCH_INTERVAL_MS) {
+    radarFetchInProgress = true;
+    xTaskCreatePinnedToCore(radarFetchTaskFn, "radarFetch", 16384, nullptr, 1, nullptr, 0);
   }
 
   if (radarDirty) {
@@ -2417,7 +2407,7 @@ void handleRoot() {
   page += "<p>Live aircraft near your saved location (see Location below), from adsb.fi open data.</p>";
   page += "<label class='label'>Radar range</label><select name='radarRange'>";
   for (int i = 0; i < RADAR_RANGE_COUNT; i++) {
-    page += "<option value='" + String(i) + "'" + String(radarRangeIndex == i ? " selected" : "") + ">" + String((int)RADAR_RANGES[i].km) + " km</option>";
+    page += "<option value='" + String(i) + "'" + String(radarRangeIndex == i ? " selected" : "") + ">" + radarRangeLabel(i) + "</option>";
   }
   page += "</select>";
   page += "<div class='muted'>Tap the radar screen on the device to cycle range too.</div>";
@@ -2778,6 +2768,8 @@ void setup() {
   digitalWrite(TOUCH_CS, HIGH);
   ts.begin(touchSPI);
   ts.setRotation(ROT);
+
+  radarDataMutex = xSemaphoreCreateMutex();
 
   tft.drawString("Connecting WiFi...", 10, 34, 2);
   connectWiFi(true);
