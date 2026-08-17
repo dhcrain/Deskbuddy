@@ -555,24 +555,12 @@ static String formatMinuteOfDay(int minOfDay) {
 
 static String tempText() {
   if (isnan(tempC)) return unitKey == "imperial" ? "--.-F" : "--.-C";
-
-  if (unitKey == "imperial") {
-    float f = tempC * 9.0f / 5.0f + 32.0f;
-    return String(f, 1) + "F";
-  }
-
-  return String(tempC, 1) + "C";
+  return String(tempC, 1) + (unitKey == "imperial" ? "F" : "C");
 }
 
 static String formatDisplayTemp(float value) {
   if (isnan(value)) return "--";
-
-  if (unitKey == "imperial") {
-    float f = value * 9.0f / 5.0f + 32.0f;
-    return String((int)roundf(f)) + "F";
-  }
-
-  return String((int)roundf(value)) + "C";
+  return String((int)roundf(value)) + (unitKey == "imperial" ? "F" : "C");
 }
 
 static String tempRangeText() {
@@ -581,24 +569,12 @@ static String tempRangeText() {
 
 static String rainText() {
   if (isnan(precipMm)) return unitKey == "imperial" ? "--.--in" : "--.-mm";
-
-  if (unitKey == "imperial") {
-    float inches = precipMm / 25.4f;
-    return String(inches, 2) + "in";
-  }
-
-  return String(precipMm, 1) + "mm";
+  return unitKey == "imperial" ? String(precipMm, 2) + "in" : String(precipMm, 1) + "mm";
 }
 
 static String windText() {
   if (isnan(windSpeedMs)) return unitKey == "imperial" ? "--.-mph" : "--.-m/s";
-
-  if (unitKey == "imperial") {
-    float mph = windSpeedMs * 2.236936f;
-    return String(mph, 1) + "mph";
-  }
-
-  return String(windSpeedMs, 1) + "m/s";
+  return unitKey == "imperial" ? String(windSpeedMs, 1) + "mph" : String(windSpeedMs, 1) + "m/s";
 }
 
 static String windDirectionText() {
@@ -1202,12 +1178,18 @@ bool fetchWeather() {
   WiFiClientSecure client;
   client.setInsecure();
 
+  String windUnitParam = unitKey == "imperial" ? "mph" : "ms";
+  String tempUnitParam = unitKey == "imperial" ? "fahrenheit" : "celsius";
+  String precipUnitParam = unitKey == "imperial" ? "inch" : "mm";
+
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") + String(LAT, 4) +
                "&longitude=" + String(LNG, 4) +
-               "&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index" +
-               "&hourly=precipitation" +
+               "&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,precipitation" +
                "&daily=temperature_2m_max,temperature_2m_min" +
-               "&forecast_days=1&timezone=auto&wind_speed_unit=ms";
+               "&forecast_days=1&timezone=auto" +
+               "&wind_speed_unit=" + windUnitParam +
+               "&temperature_unit=" + tempUnitParam +
+               "&precipitation_unit=" + precipUnitParam;
 
   HTTPClient http;
   if (!http.begin(client, url)) return false;
@@ -1228,6 +1210,7 @@ bool fetchWeather() {
   windSpeedMs = doc["current"]["wind_speed_10m"] | NAN;
   windDirectionDeg = doc["current"]["wind_direction_10m"] | NAN;
   uvIndex = doc["current"]["uv_index"] | NAN;
+  precipMm = doc["current"]["precipitation"] | NAN;
   tempMaxC = NAN;
   tempMinC = NAN;
 
@@ -1235,29 +1218,6 @@ bool fetchWeather() {
   JsonArray minTemps = doc["daily"]["temperature_2m_min"];
   if (maxTemps && !maxTemps.isNull() && maxTemps.size() > 0) tempMaxC = maxTemps[0] | NAN;
   if (minTemps && !minTemps.isNull() && minTemps.size() > 0) tempMinC = minTemps[0] | NAN;
-
-  JsonArray times = doc["hourly"]["time"];
-  JsonArray precs = doc["hourly"]["precipitation"];
-
-  if (times && precs) {
-    time_t nowT = time(nullptr);
-    struct tm tmNow;
-    localtime_r(&nowT, &tmNow);
-
-    char key[20];
-    strftime(key, sizeof(key), "%Y-%m-%dT%H:00", &tmNow);
-
-    int idx = -1;
-    for (int i = 0; i < (int)times.size(); i++) {
-      const char* t = times[i];
-      if (t && String(t).startsWith(key)) {
-        idx = i;
-        break;
-      }
-    }
-    if (idx < 0) idx = 0;
-    precipMm = precs[idx] | NAN;
-  }
 
   lastWeatherFetch = time(nullptr);
   lastSyncTime = lastWeatherFetch;
@@ -2468,6 +2428,8 @@ void handleSave() {
     (fabsf(newLng - LNG) > 0.0001f) ||
     (newLoc != locationName);
 
+  bool unitsChanged = newUnits != unitKey;
+
   notesText = newNotes;
   buddyNickname = newNickname;
   locationName = newLoc;
@@ -2542,7 +2504,7 @@ void handleSave() {
   lastNextSunTime = "";
   lastUptimeText = "";
 
-  if (locationChanged) resetDataCaches();
+  if (locationChanged || unitsChanged) resetDataCaches();
 
   server.sendHeader("Location", "/");
   server.send(303);
