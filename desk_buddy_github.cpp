@@ -177,7 +177,8 @@ enum HomeWidgetType {
   HOME_WIDGET_KP,
   HOME_WIDGET_UV,
   HOME_WIDGET_WIND,
-  HOME_WIDGET_SUN
+  HOME_WIDGET_SUN,
+  HOME_WIDGET_MOON
 };
 
 const int HOME_SLOT_COUNT = 4;
@@ -251,6 +252,7 @@ const char* homeWidgetKey(HomeWidgetType type) {
     case HOME_WIDGET_UV:      return "uv";
     case HOME_WIDGET_WIND:    return "wind";
     case HOME_WIDGET_SUN:     return "sun";
+    case HOME_WIDGET_MOON:    return "moon";
     default:                  return "week";
   }
 }
@@ -265,6 +267,7 @@ const char* homeWidgetLabel(HomeWidgetType type) {
     case HOME_WIDGET_UV:      return "UV index";
     case HOME_WIDGET_WIND:    return "Wind";
     case HOME_WIDGET_SUN:     return "Sun event";
+    case HOME_WIDGET_MOON:    return "Moon phase";
     default:                  return "Week";
   }
 }
@@ -278,6 +281,7 @@ HomeWidgetType homeWidgetFromKey(const String& key) {
   if (key == "uv") return HOME_WIDGET_UV;
   if (key == "wind") return HOME_WIDGET_WIND;
   if (key == "sun") return HOME_WIDGET_SUN;
+  if (key == "moon") return HOME_WIDGET_MOON;
   return HOME_WIDGET_WEEK;
 }
 
@@ -427,7 +431,8 @@ void appendHomeWidgetOptions(String& page, const String& selectedKey) {
     HOME_WIDGET_KP,
     HOME_WIDGET_UV,
     HOME_WIDGET_WIND,
-    HOME_WIDGET_SUN
+    HOME_WIDGET_SUN,
+    HOME_WIDGET_MOON
   };
 
   for (HomeWidgetType type : types) {
@@ -473,6 +478,7 @@ static float precipMm = NAN;
 static float windSpeedMs = NAN;
 static float windDirectionDeg = NAN;
 static float uvIndex = NAN;
+static float moonPhase = NAN;
 static time_t lastWeatherFetch = 0;
 static const uint32_t WEATHER_INTERVAL_SEC = 10 * 60;
 
@@ -638,6 +644,20 @@ static String uvLevelText() {
   if (uvIndex < 8.0f) return "High";
   if (uvIndex < 11.0f) return "Very High";
   return "Extreme";
+}
+
+static String moonPhaseText() {
+  if (isnan(moonPhase)) return "--%";
+  return String((int)roundf(moonPhase * 100.0f)) + "%";
+}
+
+static String moonPhaseLabelText() {
+  if (isnan(moonPhase)) return "--";
+  if (moonPhase < 0.02f) return "New Moon";
+  if (moonPhase < 0.48f) return "Crescent";
+  if (moonPhase < 0.52f) return "Quarter";
+  if (moonPhase < 0.98f) return "Gibbous";
+  return "Full Moon";
 }
 
 static uint16_t statusColor() {
@@ -1220,7 +1240,7 @@ bool fetchWeather() {
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") + String(LAT, 4) +
                "&longitude=" + String(LNG, 4) +
                "&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,precipitation" +
-               "&daily=temperature_2m_max,temperature_2m_min" +
+               "&daily=temperature_2m_max,temperature_2m_min,moon_phase" +
                "&forecast_days=1&timezone=auto" +
                "&wind_speed_unit=" + windUnitParam +
                "&temperature_unit=" + tempUnitParam +
@@ -1242,8 +1262,10 @@ bool fetchWeather() {
 
   JsonArray maxTemps = doc["daily"]["temperature_2m_max"];
   JsonArray minTemps = doc["daily"]["temperature_2m_min"];
+  JsonArray moonPhases = doc["daily"]["moon_phase"];
   if (maxTemps && !maxTemps.isNull() && maxTemps.size() > 0) tempMaxC = maxTemps[0] | NAN;
   if (minTemps && !minTemps.isNull() && minTemps.size() > 0) tempMinC = minTemps[0] | NAN;
+  if (moonPhases && !moonPhases.isNull() && moonPhases.size() > 0) moonPhase = moonPhases[0] | NAN;
 
   lastWeatherFetch = time(nullptr);
   lastSyncTime = lastWeatherFetch;
@@ -1252,7 +1274,7 @@ bool fetchWeather() {
 
 void ensureWeather() {
   time_t nowT = time(nullptr);
-  if ((isnan(tempC) || isnan(tempMinC) || isnan(tempMaxC) || isnan(precipMm) || isnan(windSpeedMs) || isnan(windDirectionDeg) || isnan(uvIndex) ||
+  if ((isnan(tempC) || isnan(tempMinC) || isnan(tempMaxC) || isnan(precipMm) || isnan(windSpeedMs) || isnan(windDirectionDeg) || isnan(uvIndex) || isnan(moonPhase) ||
        (nowT - lastWeatherFetch) > WEATHER_INTERVAL_SEC) &&
       WiFi.status() == WL_CONNECTED) {
     if (fetchWeather()) dataDirty = true;
@@ -1473,6 +1495,26 @@ void drawMoonIcon(TFT_eSprite& spr, int cx, int cy, uint16_t c) {
   spr.fillCircle(cx + 4, cy - 2, 6, COL_PANEL);
 }
 
+// Renders the moon disc as a lit/dark terminator scaled to the illuminated
+// fraction (0 = new moon, 1 = full moon). Convention: illumination grows
+// from the right edge, matching a waxing moon's on-screen silhouette.
+void drawMoonPhaseGraphic(TFT_eSprite& spr, int cx, int cy, int r, float illum, uint16_t litColor, uint16_t darkColor) {
+  if (isnan(illum)) illum = 0.5f;
+  illum = constrain(illum, 0.0f, 1.0f);
+
+  for (int dy = -r; dy <= r; dy++) {
+    int rowR = (int)lroundf(sqrtf((float)(r * r - dy * dy)));
+    if (rowR <= 0) continue;
+    int termX = (int)lroundf(rowR * (1.0f - 2.0f * illum));
+
+    int darkW = termX - (-rowR);
+    if (darkW > 0) spr.drawFastHLine(cx - rowR, cy + dy, darkW, darkColor);
+
+    int litW = rowR - termX + 1;
+    if (litW > 0) spr.drawFastHLine(cx + termX, cy + dy, litW, litColor);
+  }
+}
+
 // =========================================================
 // HOME SPRITES
 // =========================================================
@@ -1606,6 +1648,36 @@ void drawSunEventWidget(int x, int y, int w, int h, String& cache, bool force = 
   pushSpriteAndDelete(sprSmall, x, y);
 }
 
+void drawMoonPhaseWidget(int x, int y, int w, int h, String& cache, bool force = false) {
+  String value = moonPhaseText();
+  String detail = moonPhaseLabelText();
+  String combined = value + "|" + detail + "|" + String(COL_PANEL) + "|" +
+                    String(COL_STROKE) + "|" + String(COL_TEXT) + "|" + String(COL_ACCENT);
+
+  if (!force && combined == cache) return;
+  cache = combined;
+
+  makeSpriteCard(sprSmall, w, h, true);
+
+  sprSmall.setTextDatum(TL_DATUM);
+  sprSmall.setTextColor(COL_DIM, COL_PANEL);
+  sprSmall.drawString("Moon", 10, 8, 2);
+
+  sprSmall.setTextColor(COL_TEXT, COL_PANEL);
+  sprSmall.drawString(value, 10, 30, 4);
+
+  sprSmall.setTextColor(COL_ACCENT, COL_PANEL);
+  sprSmall.drawString(detail, 10, 54, 1);
+
+  const int iconCx = w - 22;
+  const int iconCy = h / 2;
+  const int iconR = 16;
+  drawMoonPhaseGraphic(sprSmall, iconCx, iconCy, iconR, moonPhase, COL_TEXT, COL_PANEL);
+  sprSmall.drawCircle(iconCx, iconCy, iconR, COL_STROKE);
+
+  pushSpriteAndDelete(sprSmall, x, y);
+}
+
 void drawPlaceholderSprite(int x, int y, int w, int h, const char* label, String& cache, bool force = false) {
   String combined = String(label) + "|" + String(COL_PANEL) + "|" + String(COL_STROKE) + "|" + String(COL_TEXT);
 
@@ -1682,6 +1754,9 @@ void drawHomeSlotWidget(int slot, bool force = false) {
       break;
     case HOME_WIDGET_SUN:
       drawSunEventWidget(x, y, w, h, cacheHomeSlots[slot], force);
+      break;
+    case HOME_WIDGET_MOON:
+      drawMoonPhaseWidget(x, y, w, h, cacheHomeSlots[slot], force);
       break;
   }
 }
