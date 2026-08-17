@@ -2010,8 +2010,8 @@ void radarDrawGrid() {
   tft.drawString("E", cx + r + 6, cy, 2);
 
   tft.setTextColor(COL_DIM);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString(radarRangeLabel(), cx, cy + 16, 1);
+  tft.setTextDatum(MR_DATUM);
+  tft.drawString(radarRangeLabel(), cx + r + 6, cy + r - 4, 1);
 
   tft.setTextDatum(TL_DATUM);
 }
