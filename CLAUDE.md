@@ -1,13 +1,13 @@
 # Deskbuddy
 
-## Arduino IDE sync
+## Building
 
-The Arduino IDE compiles from `~/Documents/Arduino/DeskBuddy/DeskBuddy.ino`, a separate copy from this repo's `desk_buddy_github.cpp`. They are NOT symlinked and do not sync automatically.
+This repo directory (`Deskbuddy/`) is itself a valid Arduino sketch: `Deskbuddy.ino` matches the folder name, so `arduino-cli compile`/`upload` work directly from here. `arduino_secrets.h` lives in this repo too (gitignored, not tracked) for that to work.
 
-After editing `desk_buddy_github.cpp` here, copy it to the sketch file before building/flashing in Arduino IDE:
+There is a second, separate copy at `~/Documents/Arduino/DeskBuddy/DeskBuddy.ino` for the Arduino IDE GUI. It is NOT symlinked and does not sync automatically. After editing `Deskbuddy.ino` here, copy it over before building/flashing in Arduino IDE:
 
 ```
-cp desk_buddy_github.cpp ~/Documents/Arduino/DeskBuddy/DeskBuddy.ino
+cp Deskbuddy.ino ~/Documents/Arduino/DeskBuddy/DeskBuddy.ino
 ```
 
-`arduino_secrets.h` also has a separate copy in the sketch folder (gitignored, not tracked in this repo).
+That sketch folder has its own separate `arduino_secrets.h` copy too (gitignored, not tracked in this repo).

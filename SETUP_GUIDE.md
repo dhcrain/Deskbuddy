@@ -82,9 +82,7 @@ Open the Deskbuddy project in Arduino IDE.
 
 For the public version, use:
 
-- [desk_buddy_github.cpp]
-
-If you rename the file or convert it to an `.ino`, that is also fine as long as the project builds correctly in Arduino IDE.
+- `Deskbuddy.ino`
 
 ## 5. Add Your WiFi Credentials
 
