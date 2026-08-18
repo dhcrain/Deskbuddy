@@ -214,9 +214,6 @@ bool dataDirty = true;
 
 // cache
 String cacheClock = "";
-String cacheTemp = "";
-String cacheRain = "";
-String cacheWeek = "";
 String cacheHomeEmpty1 = "";
 String cacheHomeEmpty2 = "";
 String cacheFocusTimer = "";
