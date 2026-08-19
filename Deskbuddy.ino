@@ -1693,7 +1693,7 @@ void drawHomeSlotWidget(int slot, bool force = false) {
       drawFocusTimerWidget(x, y, w, h, cacheHomeSlots[slot], force);
       break;
     case HOME_WIDGET_RAIN:
-      drawWeatherStyleMetricSprite(x, y, w, h, "Rain", rainText(), cacheHomeSlots[slot], force);
+      drawWeatherStyleMetricSprite(x, y, w, h, "Rain", rainText(), cacheHomeSlots[slot], force, "Past 24hrs");
       break;
     case HOME_WIDGET_OUTDOOR:
       drawWeatherStyleMetricSprite(x, y, w, h, "Outdoor", tempText(), cacheHomeSlots[slot], force, tempRangeText());
@@ -1891,11 +1891,13 @@ void updateWeatherDynamic() {
 
   String r = rainText();
   if (r != lastRainText) {
-    tft.fillRect(134, PAGE_ROW1_Y + 30, 88, 24, COL_PANEL);
+    tft.fillRect(134, PAGE_ROW1_Y + 30, 88, 30, COL_PANEL);
     tft.setTextColor(COL_DIM, COL_PANEL);
     tft.drawString("Rain", 134, PAGE_ROW1_Y + 8, 2);
     tft.setTextColor(COL_TEXT, COL_PANEL);
     tft.drawString(r, 134, PAGE_ROW1_Y + 30, 4);
+    tft.setTextColor(COL_ACCENT, COL_PANEL);
+    tft.drawString("Past 24hrs", 134, PAGE_ROW1_Y + 54, 1);
     lastRainText = r;
   }
 
