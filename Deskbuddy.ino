@@ -1212,9 +1212,10 @@ bool fetchWeather() {
 
   String url = String("https://api.open-meteo.com/v1/forecast?latitude=") + String(LAT, 4) +
                "&longitude=" + String(LNG, 4) +
-               "&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index,precipitation" +
+               "&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index" +
+               "&hourly=precipitation" +
                "&daily=temperature_2m_max,temperature_2m_min,moon_phase" +
-               "&forecast_days=1&timezone=auto" +
+               "&past_days=1&forecast_days=1&timezone=auto" +
                "&wind_speed_unit=" + windUnitParam +
                "&temperature_unit=" + tempUnitParam +
                "&precipitation_unit=" + precipUnitParam;
@@ -1222,16 +1223,31 @@ bool fetchWeather() {
   String body;
   if (!httpsGetBody(url, body)) return false;
 
-  StaticJsonDocument<4096> doc;
+  StaticJsonDocument<8192> doc;
   if (deserializeJson(doc, body)) return false;
 
   tempC = doc["current"]["temperature_2m"] | NAN;
   windSpeedMs = doc["current"]["wind_speed_10m"] | NAN;
   windDirectionDeg = doc["current"]["wind_direction_10m"] | NAN;
   uvIndex = doc["current"]["uv_index"] | NAN;
-  precipMm = doc["current"]["precipitation"] | NAN;
   tempMaxC = NAN;
   tempMinC = NAN;
+
+  // hourly[] is anchored at local midnight yesterday (past_days=1), so
+  // index 24 is today's hour 0. Sum the trailing 24 entries ending at the
+  // current hour to get rolling past-24h precipitation for the Rain widget.
+  precipMm = NAN;
+  JsonArray hourlyPrecip = doc["hourly"]["precipitation"];
+  if (hourlyPrecip && !hourlyPrecip.isNull()) {
+    int idxNow = 24 + (minutesNowLocal() / 60);
+    if (idxNow >= 23 && idxNow < (int)hourlyPrecip.size()) {
+      float sum = 0;
+      for (int i = idxNow - 23; i <= idxNow; i++) {
+        sum += hourlyPrecip[i] | 0.0f;
+      }
+      precipMm = sum;
+    }
+  }
 
   JsonArray maxTemps = doc["daily"]["temperature_2m_max"];
   JsonArray minTemps = doc["daily"]["temperature_2m_min"];
