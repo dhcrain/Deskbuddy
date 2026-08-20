@@ -9,6 +9,8 @@
 // - Uptime added to Status page
 
 #include <WiFi.h>
+#include <ArduinoOTA.h>
+#include <ESPmDNS.h>
 #include <HTTPClient.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -36,6 +38,7 @@ void setWifiEnabled(bool enabled);
 // so it survives repo copies. Create it with:
 //   const char* WIFI_SSID = "your network name";
 //   const char* WIFI_PASS = "your password";
+//   const char* OTA_PASSWORD = "your OTA password";
 #include "arduino_secrets.h"
 
 // =========================================================
@@ -2798,6 +2801,12 @@ void setup() {
 
   setupWebServer();
 
+  if (WiFi.status() == WL_CONNECTED) {
+    ArduinoOTA.setHostname("deskbuddy");
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.begin();
+  }
+
   pageDirty = true;
   dataDirty = true;
 
@@ -2813,6 +2822,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  ArduinoOTA.handle();
   updateWiFiConnectionState();
   updateFocusTimerState();
   updateTimerDoneDialogState();
