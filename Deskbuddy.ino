@@ -2311,6 +2311,7 @@ bool handleRadarTouch(int x, int y) {
   radarRangeIndex = (radarRangeIndex + 1) % RADAR_RANGE_COUNT;
   prefs.putUChar("radarRange", (uint8_t)radarRangeIndex);
   lastRadarFetch = 0;
+  radarDataLoaded = false;
   pageDirty = true;
   return true;
 }
@@ -2329,7 +2330,10 @@ void handleNavTouch(int x, int y) {
   if (newPage != currentPage) {
     currentPage = newPage;
     pageDirty = true;
-    if (newPage == PAGE_RADAR) lastRadarFetch = 0;
+    if (newPage == PAGE_RADAR) {
+      lastRadarFetch = 0;
+      radarDataLoaded = false;
+    }
   }
 }
 
@@ -2649,6 +2653,7 @@ void handleSave() {
   if (!sleepDimmed && !sleepOff) setBacklight(BL_FULL);
 
   lastRadarFetch = 0;
+  radarDataLoaded = false;
   pageDirty = true;
   dataDirty = true;
 
