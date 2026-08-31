@@ -24,6 +24,8 @@
 #include <SPI.h>
 #include <XPT2046_Touchscreen.h>
 #include <math.h>
+#include "RainValueFont.h"
+#define GFXFF 1
 
 // =========================================================
 // FORWARD DECLARATIONS
@@ -175,7 +177,7 @@ String buddyNickname = "";
 enum HomeWidgetType {
   HOME_WIDGET_WEEK = 0,
   HOME_WIDGET_TIMER,
-  HOME_WIDGET_RAIN,
+  HOME_WIDGET_RAIN_COMBINED,
   HOME_WIDGET_OUTDOOR,
   HOME_WIDGET_UV,
   HOME_WIDGET_WIND,
@@ -187,7 +189,7 @@ const int HOME_SLOT_COUNT = 4;
 HomeWidgetType homeWidgetSlots[HOME_SLOT_COUNT] = {
   HOME_WIDGET_WEEK,
   HOME_WIDGET_TIMER,
-  HOME_WIDGET_RAIN,
+  HOME_WIDGET_RAIN_COMBINED,
   HOME_WIDGET_OUTDOOR
 };
 
@@ -245,7 +247,7 @@ const char* homeWidgetKey(HomeWidgetType type) {
   switch (type) {
     case HOME_WIDGET_WEEK:    return "week";
     case HOME_WIDGET_TIMER:   return "timer";
-    case HOME_WIDGET_RAIN:    return "rain";
+    case HOME_WIDGET_RAIN_COMBINED: return "raincombined";
     case HOME_WIDGET_OUTDOOR: return "outdoor";
     case HOME_WIDGET_UV:      return "uv";
     case HOME_WIDGET_WIND:    return "wind";
@@ -259,7 +261,7 @@ const char* homeWidgetLabel(HomeWidgetType type) {
   switch (type) {
     case HOME_WIDGET_WEEK:    return "Week";
     case HOME_WIDGET_TIMER:   return "Timer";
-    case HOME_WIDGET_RAIN:    return "Rain";
+    case HOME_WIDGET_RAIN_COMBINED: return "Rain (past+forecast)";
     case HOME_WIDGET_OUTDOOR: return "Outdoor";
     case HOME_WIDGET_UV:      return "UV index";
     case HOME_WIDGET_WIND:    return "Wind";
@@ -272,7 +274,7 @@ const char* homeWidgetLabel(HomeWidgetType type) {
 HomeWidgetType homeWidgetFromKey(const String& key) {
   if (key == "week") return HOME_WIDGET_WEEK;
   if (key == "timer") return HOME_WIDGET_TIMER;
-  if (key == "rain") return HOME_WIDGET_RAIN;
+  if (key == "raincombined") return HOME_WIDGET_RAIN_COMBINED;
   if (key == "outdoor") return HOME_WIDGET_OUTDOOR;
   if (key == "uv") return HOME_WIDGET_UV;
   if (key == "wind") return HOME_WIDGET_WIND;
@@ -422,7 +424,7 @@ void appendHomeWidgetOptions(String& page, const String& selectedKey) {
   const HomeWidgetType types[] = {
     HOME_WIDGET_WEEK,
     HOME_WIDGET_TIMER,
-    HOME_WIDGET_RAIN,
+    HOME_WIDGET_RAIN_COMBINED,
     HOME_WIDGET_OUTDOOR,
     HOME_WIDGET_UV,
     HOME_WIDGET_WIND,
@@ -470,6 +472,7 @@ static float tempC = NAN;
 static float tempMinC = NAN;
 static float tempMaxC = NAN;
 static float precipMm = NAN;
+static float precipForecastMm = NAN;
 static float windSpeedMs = NAN;
 static float windDirectionDeg = NAN;
 static float uvIndex = NAN;
@@ -596,6 +599,11 @@ static String tempRangeText() {
 static String rainText() {
   if (isnan(precipMm)) return unitKey == "imperial" ? "--.--in" : "--.-mm";
   return unitKey == "imperial" ? String(precipMm, 2) + "in" : String(precipMm, 1) + "mm";
+}
+
+static String rainForecastText() {
+  if (isnan(precipForecastMm)) return unitKey == "imperial" ? "--.--in" : "--.-mm";
+  return unitKey == "imperial" ? String(precipForecastMm, 2) + "in" : String(precipForecastMm, 1) + "mm";
 }
 
 static String windText() {
@@ -1218,7 +1226,7 @@ bool fetchWeather() {
                "&current=temperature_2m,wind_speed_10m,wind_direction_10m,uv_index" +
                "&hourly=precipitation" +
                "&daily=temperature_2m_max,temperature_2m_min,moon_phase" +
-               "&past_days=1&forecast_days=1&timezone=auto" +
+               "&past_days=1&forecast_days=2&timezone=auto" +
                "&wind_speed_unit=" + windUnitParam +
                "&temperature_unit=" + tempUnitParam +
                "&precipitation_unit=" + precipUnitParam;
@@ -1226,7 +1234,7 @@ bool fetchWeather() {
   String body;
   if (!httpsGetBody(url, body)) return false;
 
-  StaticJsonDocument<8192> doc;
+  StaticJsonDocument<12288> doc;
   if (deserializeJson(doc, body)) return false;
 
   tempC = doc["current"]["temperature_2m"] | NAN;
@@ -1238,8 +1246,11 @@ bool fetchWeather() {
 
   // hourly[] is anchored at local midnight yesterday (past_days=1), so
   // index 24 is today's hour 0. Sum the trailing 24 entries ending at the
-  // current hour to get rolling past-24h precipitation for the Rain widget.
+  // current hour to get rolling past-24h precipitation for the Rain widget,
+  // and the leading 24 entries starting at the current hour (forecast_days=2
+  // guarantees they exist even late in the day) for the Rain forecast widget.
   precipMm = NAN;
+  precipForecastMm = NAN;
   JsonArray hourlyPrecip = doc["hourly"]["precipitation"];
   if (hourlyPrecip && !hourlyPrecip.isNull()) {
     int idxNow = 24 + (minutesNowLocal() / 60);
@@ -1249,6 +1260,13 @@ bool fetchWeather() {
         sum += hourlyPrecip[i] | 0.0f;
       }
       precipMm = sum;
+    }
+    if (idxNow >= 0 && idxNow + 23 < (int)hourlyPrecip.size()) {
+      float sum = 0;
+      for (int i = idxNow; i <= idxNow + 23; i++) {
+        sum += hourlyPrecip[i] | 0.0f;
+      }
+      precipForecastMm = sum;
     }
   }
 
@@ -1266,7 +1284,7 @@ bool fetchWeather() {
 
 void ensureWeather() {
   time_t nowT = time(nullptr);
-  if ((isnan(tempC) || isnan(tempMinC) || isnan(tempMaxC) || isnan(precipMm) || isnan(windSpeedMs) || isnan(windDirectionDeg) || isnan(uvIndex) || isnan(moonPhase) ||
+  if ((isnan(tempC) || isnan(tempMinC) || isnan(tempMaxC) || isnan(precipMm) || isnan(precipForecastMm) || isnan(windSpeedMs) || isnan(windDirectionDeg) || isnan(uvIndex) || isnan(moonPhase) ||
        (nowT - lastWeatherFetch) > WEATHER_INTERVAL_SEC) &&
       WiFi.status() == WL_CONNECTED) {
     if (fetchWeather()) dataDirty = true;
@@ -1574,6 +1592,45 @@ void drawWeatherStyleMetricSprite(int x, int y, int w, int h, const char* label,
   pushSpriteAndDelete(sprSmall, x, y);
 }
 
+void drawRainCombinedWidget(int x, int y, int w, int h, String& cache, bool force = false) {
+  String past = rainText();
+  String next = rainForecastText();
+  String combined = past + "|" + next + "|" + String(COL_PANEL) + "|" +
+                    String(COL_STROKE) + "|" + String(COL_TEXT) + "|" + String(COL_ACCENT);
+
+  if (!force && combined == cache) return;
+  cache = combined;
+
+  makeSpriteCard(sprSmall, w, h, true);
+
+  sprSmall.setTextDatum(TL_DATUM);
+
+  const int padTop = 6;
+  const int padBottom = 6;
+  const int padLeft = 8;
+  const int labelValueGap = 8;
+  const int rowGap = 6;
+  const int rowH = (h - padTop - padBottom - rowGap) / 2;
+  const int row1Y = padTop;
+  const int row2Y = padTop + rowH + rowGap;
+
+  int labelW = max(sprSmall.textWidth("Past", 1), sprSmall.textWidth("Next", 1));
+  int valueX = padLeft + labelW + labelValueGap;
+
+  sprSmall.setTextColor(COL_ACCENT, COL_PANEL);
+  sprSmall.drawString("Past", padLeft, row1Y + (rowH - 8) / 2, 1);
+  sprSmall.drawString("Next", padLeft, row2Y + (rowH - 8) / 2, 1);
+
+  sprSmall.setTextColor(COL_TEXT, COL_PANEL);
+  sprSmall.setFreeFont(&RainValueFont);
+  const int valueH = 17;
+  sprSmall.drawString(past, valueX, row1Y + (rowH - valueH) / 2, GFXFF);
+  sprSmall.drawString(next, valueX, row2Y + (rowH - valueH) / 2, GFXFF);
+  sprSmall.setFreeFont(nullptr);
+
+  pushSpriteAndDelete(sprSmall, x, y);
+}
+
 void drawSunEventWidget(int x, int y, int w, int h, String& cache, bool force = false) {
   String label = nextSunLabel();
   String value = nextSunTimeText();
@@ -1695,8 +1752,8 @@ void drawHomeSlotWidget(int slot, bool force = false) {
     case HOME_WIDGET_TIMER:
       drawFocusTimerWidget(x, y, w, h, cacheHomeSlots[slot], force);
       break;
-    case HOME_WIDGET_RAIN:
-      drawWeatherStyleMetricSprite(x, y, w, h, "Rain", rainText(), cacheHomeSlots[slot], force, "Past 24hrs");
+    case HOME_WIDGET_RAIN_COMBINED:
+      drawRainCombinedWidget(x, y, w, h, cacheHomeSlots[slot], force);
       break;
     case HOME_WIDGET_OUTDOOR:
       drawWeatherStyleMetricSprite(x, y, w, h, "Outdoor", tempText(), cacheHomeSlots[slot], force, tempRangeText());
