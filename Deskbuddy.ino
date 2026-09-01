@@ -232,7 +232,7 @@ String lastSignalText = "";
 String lastIpText = "";
 String lastUptimeText = "";
 String lastTempText = "";
-String lastRainText = "";
+String cacheWeatherRain = "";
 String lastUvText = "";
 String lastUvLevelText = "";
 String lastMoonText = "";
@@ -1923,7 +1923,7 @@ void drawWeatherPageFull() {
   lastDrawnPage = PAGE_WEATHER;
 
   lastTempText = "";
-  lastRainText = "";
+  cacheWeatherRain = "";
   lastUvText = "";
   lastUvLevelText = "";
   lastMoonText = "";
@@ -1949,17 +1949,7 @@ void updateWeatherDynamic() {
     lastTempText = tempCombined;
   }
 
-  String r = rainText();
-  if (r != lastRainText) {
-    tft.fillRect(134, PAGE_ROW1_Y + 30, 88, 30, COL_PANEL);
-    tft.setTextColor(COL_DIM, COL_PANEL);
-    tft.drawString("Rain", 134, PAGE_ROW1_Y + 8, 2);
-    tft.setTextColor(COL_TEXT, COL_PANEL);
-    tft.drawString(r, 134, PAGE_ROW1_Y + 30, 4);
-    tft.setTextColor(COL_ACCENT, COL_PANEL);
-    tft.drawString("Past 24hrs", 134, PAGE_ROW1_Y + 54, 1);
-    lastRainText = r;
-  }
+  drawRainCombinedWidget(124, PAGE_ROW1_Y, 108, PAGE_WIDGET_H, cacheWeatherRain);
 
   String u = uvText();
   String ul = uvLevelText();
@@ -2725,7 +2715,7 @@ void handleSave() {
   }
 
   lastTempText = "";
-  lastRainText = "";
+  cacheWeatherRain = "";
   lastMoonText = "";
   lastMoonLevelText = "";
   lastWindText = "";
